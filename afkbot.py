@@ -186,7 +186,7 @@ class timedWatcher(threading.Thread):
         print time.strftime("%a, %d %b %Y %H:%M:%S +0000"),self.threadName,"timed thread going away"
 
 class mumbleConnection(threading.Thread):
-    def __init__(self,host=None,nickname=None,channel=None,delay=None,limit=None,password=None,verbose=False,certificate=None):
+    def __init__(self,host=None,nickname=None,channel=None,delay=None,limit=None,password=None,verbose=False,certificate=None,afkchannel=None,idletime=30):
         global threadNumber
         i = threadNumber
         threadNumber+=1
@@ -217,7 +217,8 @@ class mumbleConnection(threading.Thread):
 	#######################################
 	# AFKBot-specific config
 	#######################################
-        self.idleLimit=30 #Idle limit in minutes
+        self.idleLimit=idletime #Idle limit in minutes
+	self.afkChannel=afkchannel
         
     def decodePDSInt(self,m,si=0):
         v = ord(m[si])
@@ -306,7 +307,7 @@ class mumbleConnection(threading.Thread):
         #Type 1 = UDP Tunnel, voice data
         if msgType==1:
             session,sessLen=self.decodePDSInt(stringMessage,1)
-            if session in self.userList and self.userList[session]["channel"] == self.channelListByName["AFK"]:
+            if session in self.userList and self.userList[session]["channel"] == self.channelListByName[self.afkChannel]:
                 if "idlesecs" in self.userList[session] and "oldchannel" in self.userList[session]["idlesecs"]:
                     pbMess = Mumble_pb2.UserState()
                     pbMess.session = session
@@ -382,7 +383,7 @@ class mumbleConnection(threading.Thread):
                 record["channel"]=0
             channelName = self.channelList[record["channel"]]
             #If they're not already in the AFK channel
-            if message.channel_id != self.channelListByName["AFK"]:
+            if message.channel_id != self.channelListByName[self.afkChannel]:
                 #Send a query for UserStats -- needed to get idletime
                 if "idlesecs" in record:
                     record["idlesecs"]["checksent"] = True
@@ -442,7 +443,7 @@ class mumbleConnection(threading.Thread):
                     pbMess = Mumble_pb2.UserState()
                     pbMess.session = message.actor
                     pbMess.actor = self.session
-                    pbMess.channel_id = self.channelListByName["AFK"]
+                    pbMess.channel_id = self.channelListByName[self.afkChannel]
                     if not self.sendTotally(self.packageMessageForSending(messageLookupMessage[type(pbMess)],pbMess.SerializeToString())):
                         self.wrapUpThread()
                     self.userList[message.actor]["idlesecs"]["checkon"] = -1
@@ -463,7 +464,7 @@ class mumbleConnection(threading.Thread):
                             self.wrapUpThread()
                         return
                     pbMess.actor = self.session
-                    pbMess.channel_id = self.channelListByName["AFK"]
+                    pbMess.channel_id = self.channelListByName[self.afkChannel]
                     if not self.sendTotally(self.packageMessageForSending(messageLookupMessage[type(pbMess)],pbMess.SerializeToString())):
                         self.wrapUpThread()
                     self.userList[pbMess.session]["idlesecs"]["checkon"] = -1
@@ -504,7 +505,7 @@ class mumbleConnection(threading.Thread):
                 pbMess = Mumble_pb2.UserState()
                 pbMess.session = message.session
                 pbMess.actor = self.session
-                pbMess.channel_id = self.channelListByName["AFK"];
+                pbMess.channel_id = self.channelListByName[self.afkChannel];
                 if not self.sendTotally(self.packageMessageForSending(messageLookupMessage[type(pbMess)],pbMess.SerializeToString())):
                     self.wrapUpThread()
                 self.userList[message.session]["idlesecs"]["checkon"] = -1
@@ -594,6 +595,8 @@ def main():
     p.add_option("-l","--limit",help="Maximum response per minutes (default %default, 0 = unlimited)",action="store",type="int",default=0)
 #    p.add_option("-c","--config",help="Configuration file",action="store",type="string",default="mumblebee.cfg")
     p.add_option("-c","--certificate",help="Certificate file for the bot to use when connecting to the server (.pem)",action="store",type="string",default="afkbot.pem")
+    p.add_option("-a","--afk-channel",help="Designated AFK channel name",action="store",type="string",default="AFK")
+    p.add_option("-i","--idle-time",help="Time (in minutes) before user is moved to the AFK channel",action="store",type="int",default=30);
     p.add_option("-v","--verbose",help="Outputs and translates all messages received from the server",action="store_true",default=False)
     p.add_option("--password",help="Password for server, if any",action="store",type="string")
     
@@ -612,7 +615,7 @@ def main():
     #daemoninstance.stdout = logfile;
     #daemoninstance.1
     
-    eavesdropper = mumbleConnection(host,o.nick,o.eavesdrop_in,delay=o.delay,limit=o.limit,password=o.password,verbose=o.verbose,certificate=o.certificate)
+    eavesdropper = mumbleConnection(host,o.nick,o.eavesdrop_in,delay=o.delay,limit=o.limit,password=o.password,verbose=o.verbose,certificate=o.certificate,afkchannel=o.afk_channel,idletime=o.idle_time)
     eavesdropper.start()
     
     #Need to keep main thread alive to receive shutdown signal
