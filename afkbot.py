@@ -186,7 +186,7 @@ class timedWatcher(threading.Thread):
         print time.strftime("%a, %d %b %Y %H:%M:%S +0000"),self.threadName,"timed thread going away"
 
 class mumbleConnection(threading.Thread):
-    def __init__(self,host=None,nickname=None,channel=None,delay=None,limit=None,password=None,verbose=False):
+    def __init__(self,host=None,nickname=None,channel=None,delay=None,limit=None,password=None,verbose=False,certificate=None):
         global threadNumber
         i = threadNumber
         threadNumber+=1
@@ -194,7 +194,7 @@ class mumbleConnection(threading.Thread):
         threading.Thread.__init__(self)
         tcpSock=socket.socket(type=socket.SOCK_STREAM)
         self.socketLock=thread.allocate_lock()
-        self.socket=ssl.wrap_socket(tcpSock,certfile="afkbot.pem",ssl_version=ssl.PROTOCOL_TLSv1)
+        self.socket=ssl.wrap_socket(tcpSock,certfile=certificate,ssl_version=ssl.PROTOCOL_TLSv1)
         self.socket.setsockopt(socket.SOL_TCP,socket.TCP_NODELAY,1)
         self.host=host
         self.nickname=nickname
@@ -582,8 +582,8 @@ def main():
     global eavesdropper,warning
             
     p = optparse.OptionParser(description='Mumble 1.2 AFKBot',
-                prog='mumblebee.py',
-                version='%prog 0.0.1',
+                prog='afkbot.py',
+                version='%prog 0.5.0',
                 usage='\t%prog')
     
     p.add_option("-e","--eavesdrop-in",help="Channel to eavesdrop in (default %%Root)",action="store",type="string",default="AFK")
@@ -592,7 +592,8 @@ def main():
     p.add_option("-n","--nick",help="Nickname for the eavesdropper (default %default)",action="store",type="string",default="AFKBot2")
     p.add_option("-d","--delay",help="Time to delay response by in seconds (default %default)",action="store",type="float",default=0)
     p.add_option("-l","--limit",help="Maximum response per minutes (default %default, 0 = unlimited)",action="store",type="int",default=0)
-    p.add_option("-c","--config",help="Configuration file",action="store",type="string",default="mumblebee.cfg")
+#    p.add_option("-c","--config",help="Configuration file",action="store",type="string",default="mumblebee.cfg")
+    p.add_option("-c","--certificate",help="Certificate file for the bot to use when connecting to the server (.pem)",action="store",type="string",default="afkbot.pem")
     p.add_option("-v","--verbose",help="Outputs and translates all messages received from the server",action="store_true",default=False)
     p.add_option("--password",help="Password for server, if any",action="store",type="string")
     
@@ -611,7 +612,7 @@ def main():
     #daemoninstance.stdout = logfile;
     #daemoninstance.1
     
-    eavesdropper = mumbleConnection(host,o.nick,o.eavesdrop_in,delay=o.delay,limit=o.limit,password=o.password,verbose=o.verbose)
+    eavesdropper = mumbleConnection(host,o.nick,o.eavesdrop_in,delay=o.delay,limit=o.limit,password=o.password,verbose=o.verbose,certificate=o.certificate)
     eavesdropper.start()
     
     #Need to keep main thread alive to receive shutdown signal
