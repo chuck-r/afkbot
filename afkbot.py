@@ -97,6 +97,7 @@ except:
 
 headerFormat=">HI"
 eavesdropper=None
+controlbreak = False
 messageLookupMessage={Mumble_pb2.Version:0,Mumble_pb2.UDPTunnel:1,Mumble_pb2.Authenticate:2,Mumble_pb2.Ping:3,Mumble_pb2.Reject:4,Mumble_pb2.ServerSync:5,
         Mumble_pb2.ChannelRemove:6,Mumble_pb2.ChannelState:7,Mumble_pb2.UserRemove:8,Mumble_pb2.UserState:9,Mumble_pb2.BanList:10,Mumble_pb2.TextMessage:11,Mumble_pb2.PermissionDenied:12,
         Mumble_pb2.ACL:13,Mumble_pb2.QueryUsers:14,Mumble_pb2.CryptSetup:15,Mumble_pb2.ContextActionModify:16,Mumble_pb2.ContextAction:17,Mumble_pb2.UserList:18,Mumble_pb2.VoiceTarget:19,
@@ -133,6 +134,8 @@ def discontinue_processing(signl, frme):
         eavesdropper.wrapUpThread()
     else:
         sys.exit(0)
+    global controlbreak;
+    controlbreak = True;
 
 signal.signal( signal.SIGINT, discontinue_processing )
 #signal.signal( signal.SIGQUIT, discontinue_processing )
@@ -448,6 +451,8 @@ class mumbleConnection(threading.Thread):
                     return
                 if message.message.startswith("/afk"):
                     args = message.message.split(" ",1)
+                    if len(args) == 1:
+                      return
                     pbMess = Mumble_pb2.UserState()
                     for key in self.userListByName:
                         if key.lower() == args[1].lower():
@@ -469,6 +474,8 @@ class mumbleConnection(threading.Thread):
                     return
                 if message.message.startswith("/unafk"):
                     args = message.message.split(" ",1)
+                    if len(args) == 1:
+                      return
                     pbMess = Mumble_pb2.UserState()
                     for key in self.userListByName:
                         if key.lower() == args[1].lower():
@@ -578,7 +585,7 @@ class mumbleConnection(threading.Thread):
         print time.strftime("%a, %d %b %Y %H:%M:%S +0000"),self.threadName,"thread going away -",self.nickname
 
 def main():
-    global eavesdropper,warning
+    global eavesdropper,warning,controlbreak
             
     p = optparse.OptionParser(description='Mumble 1.2 AFKBot',
                 prog='afkbot.py',
@@ -612,13 +619,17 @@ def main():
     #daemoninstance.stdout = logfile;
     #daemoninstance.1
     
-    eavesdropper = mumbleConnection(host,o.nick,o.afk_channel,delay=o.delay,limit=o.limit,password=o.password,verbose=o.verbose,certificate=o.certificate,idletime=o.idle_time)
-    eavesdropper.start()
+    while True:
+        eavesdropper = mumbleConnection(host,o.nick,o.afk_channel,delay=o.delay,limit=o.limit,password=o.password,verbose=o.verbose,certificate=o.certificate,idletime=o.idle_time)
+        eavesdropper.start()
     
-    #Need to keep main thread alive to receive shutdown signal
+        #Need to keep main thread alive to receive shutdown signal
     
-    while eavesdropper.isAlive():
-        time.sleep(0.5)
+        while eavesdropper.isAlive():
+            time.sleep(0.5)
+
+        if controlbreak == True:
+            break
         
     return 0
 
