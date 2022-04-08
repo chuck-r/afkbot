@@ -69,7 +69,7 @@ import time
 import struct
 import sys
 import select
-import thread
+import _thread
 import threading
 import signal
 import os
@@ -77,7 +77,7 @@ import optparse
 import platform
 import random
 #import daemon
-import ConfigParser
+import configparser
 
 import pdb
 from pprint import pprint
@@ -85,15 +85,20 @@ from pprint import pprint
 warning=""
 try:
     import ssl
+    from ssl import SSLContext
 except:
-    warning+="WARNING: This python program requires the python ssl module (available in python 2.6; standalone version may be at found http://pypi.python.org/pypi/ssl/)\n"
+    print("ERROR: This python program requires the python ssl module (available in python 2.6; standalone version may be at found http://pypi.python.org/pypi/ssl/)\n")
+    print(warning)
+    sys.exit(1)
 try:
     import Mumble_pb2
 except:
-    warning+="WARNING: Module Mumble_pb2 not found\n"
+    warning+="ERROR: Module Mumble_pb2 not found\n"
     warning+="This program requires the Google Protobuffers library (http://code.google.com/apis/protocolbuffers/) to be installed\n"
     warning+="You must run the protobuf compiler \"protoc\" on the Mumble.proto file to generate the Mumble_pb2 file\n"
     warning+="Move the Mumble.proto file from the mumble source code into the same directory as this bot and type \"protoc --python_out=. Mumble.proto\"\n"
+    print(warning);
+    sys.exit(1)
 
 headerFormat=">HI"
 eavesdropper=None
@@ -117,12 +122,16 @@ class Logger(object):
         self.terminal.write(message)
         self.log.write(message)
 
+    def flush(self):
+        self.terminal.flush()
+        self.log.flush()
+
 sys.stdout = Logger("mumblebot.log")
 sys.stderr = sys.stdout
 
 def discontinue_processing(signl, frme):
     global eavesdropper
-    print time.strftime("%a, %d %b %Y %H:%M:%S +0000"), "Received shutdown notice"
+    print("%s: Received shutdown notice." % (time.strftime("%a, %d %b %Y %H:%M:%S +0000"),));
     if signl == signal.SIGUSR1:
         pbMess = Mumble_pb2.TextMessage()
         pbMess.actor = eavesdropper.session
@@ -186,18 +195,33 @@ class timedWatcher(threading.Thread):
             #sleeptime=self.nextPing-t
             #if sleeptime > 0:
             time.sleep(0.5)
-        print time.strftime("%a, %d %b %Y %H:%M:%S +0000"),self.threadName,"timed thread going away"
+        print("%s: timed thread going away" % (time.strftime("%a, %d %b %Y %H:%M:%S +0000"),));
 
 class mumbleConnection(threading.Thread):
-    def __init__(self,host=None,nickname=None,channel=None,delay=None,limit=None,password=None,verbose=False,certificate=None,idletime=30):
+    def __init__(self,host=None,nickname=None,channel=None,delay=None,limit=None,password=None,verbose=False,certificate=None,idletime=30,allow_self_signed=0):
         global threadNumber
         i = threadNumber
         threadNumber+=1
         self.threadName="Thread " + str(i)
         threading.Thread.__init__(self)
         tcpSock=socket.socket(type=socket.SOCK_STREAM)
-        self.socketLock=thread.allocate_lock()
-        self.socket=ssl.wrap_socket(tcpSock,certfile=certificate,ssl_version=ssl.PROTOCOL_TLSv1)
+        self.socketLock=_thread.allocate_lock()
+        #self.ssl_context=ssl.SSLContext()
+        #self.ssl_context.load_default_certs(purpose=ssl.Purpose.SERVER_AUTH)
+        #self.ssl_context.load_cert_chain(certificate)
+        self.socket=ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+        self.socket.load_default_certs(purpose=ssl.Purpose.SERVER_AUTH)
+        self.socket.load_cert_chain(certificate)
+        if allow_self_signed:
+            if not os.path.exists("server.pem"):
+                print("Downloading server certificate")
+                cert=ssl.get_server_certificate(host, ssl.PROTOCOL_TLS_CLIENT)
+                with open("server.pem","wb") as file:
+                    file.write(cert.encode('utf-8'))
+            self.socket.load_verify_locations(cafile="server.pem")
+            self.socket.check_hostname=False
+        self.socket=self.socket.wrap_socket(tcpSock,server_hostname=host[0])
+        #self.socket=ssl.wrap_socket(tcpSock,certfile=certificate,ssl_version=ssl.PROTOCOL_TLS_CLIENT)
         self.socket.setsockopt(socket.SOL_TCP,socket.TCP_NODELAY,1)
         self.host=host
         self.nickname=nickname
@@ -215,12 +239,13 @@ class mumbleConnection(threading.Thread):
         self.limit=limit
         self.password=password
         self.verbose=verbose
+        self.server_certificate=None
 
-	#######################################
-	# AFKBot-specific config
-	#######################################
+        #######################################
+        # AFKBot-specific config
+        #######################################
         self.idleLimit=idletime #Idle limit in minutes
-	self.channel=channel #AFK channel to listen in        
+        self.channel=channel #AFK channel to listen in
     def decodePDSInt(self,m,si=0):
         v = ord(m[si])
         if ((v & 0x80) == 0x00):
@@ -238,26 +263,26 @@ class mumbleConnection(threading.Thread):
             elif ((v & 0xFC) == 0xFC):
                 return (-(v & 0x03),1)
             else:
-                print time.strftime("%a, %d %b %Y %H:%M:%S +0000"),"Help Help, out of cheese :("
+                print("%s: Help help, out of cheese :(" % (time.strftime("%a, %d %b %Y %H:%M:%S +0000"),))
                 sys.exit(1)
         elif ((v & 0xF0) == 0xE0):
             return ((v & 0x0F) << 24 | ord(m[si+1]) << 16 | ord(m[si+2]) << 8 | ord(m[si+3]),4)
         elif ((v & 0xE0) == 0xC0):
             return ((v & 0x1F) << 16 | ord(m[si+1]) << 8 | ord(m[si+2]),3)
         else:
-            print time.strftime("%a, %d %b %Y %H:%M:%S +0000"),"out of cheese?"
+            print("%s: out of cheese?" % (time.strftime("%a, %d %b %Y %H:%M:%S +0000"),))
             sys.exit(1)
-    
+
     def packageMessageForSending(self,msgType,stringMessage):
         length=len(stringMessage)
         return struct.pack(headerFormat,msgType,length)+stringMessage
-    
+
     def sendTotally(self,message):
         self.socketLock.acquire()
         while len(message)>0:
             sent=self.socket.send(message)
             if sent < 0:
-                print time.strftime("%a, %d %b %Y %H:%M:%S +0000"),self.threadName,"Server socket error while trying to write, immediate abort"
+                print("[%s] %s: Server socket error while trying to write, immediate abort" % (self.threadName,time.strftime("%a, %d %b %Y %H:%M:%S +0000"),))
                 self.socketLock.release()
                 return False
             message=message[sent:]
@@ -265,21 +290,21 @@ class mumbleConnection(threading.Thread):
         return True
 
     def readTotally(self,size):
-        message=""
+        message=bytes()
         while len(message)<size:
             received=self.socket.recv(size-len(message))
             message+=received
             if len(received)==0:
-                print time.strftime("%a, %d %b %Y %H:%M:%S +0000"),self.threadName,"Server socket died while trying to read, immediate abort"
+                print("%s: Server socket died while trying to read, immediate abort" % (time.strftime("%a, %d %b %Y %H:%M:%S +0000"),))
                 return None
         return message
-    
+
     def parseMessage(self,msgType,stringMessage):
         msgClass=messageLookupNumber[msgType]
         message=msgClass()
         message.ParseFromString(stringMessage)
         return message
-    
+
     def joinChannel(self):
         if self.channelId!=None and self.session!=None:
             pbMess = Mumble_pb2.UserState()
@@ -293,7 +318,7 @@ class mumbleConnection(threading.Thread):
     def wrapUpThread(self):
         #called after thread is confirmed to be needing to die because of kick / socket close
         self.readyToClose=True
-    
+
     def readPacket(self):
         #pdb.set_trace()
         meta=self.readTotally(6)
@@ -352,7 +377,7 @@ class mumbleConnection(threading.Thread):
             message=self.parseMessage(msgType,stringMessage)
             if self.session!=None:
                 if message.session==self.session:
-                    print time.strftime("%a, %d %b %Y %H:%M:%S +0000"),self.threadName,"********* KICKED ***********"
+                    print("[%s] %s: ********** KICKED **********" % (self.threadName,time.strftime("%a, %d %b %Y %H:%M:%S +0000"),))
                     self.wrapUpThread()
                     return
             session=message.session
@@ -457,7 +482,7 @@ class mumbleConnection(threading.Thread):
                     for key in self.userListByName:
                         if key.lower() == args[1].lower():
                             pbMess.session = self.userListByName[key]
-                    print pbMess.session;
+                    print(pbMess.session);
                     if pbMess.session == 0:
                         pbMess = Mumble_pb2.TextMessage();
                         pbMess.actor = self.session;
@@ -496,9 +521,9 @@ class mumbleConnection(threading.Thread):
 
         #Type 12 = PermissionDenied
         if msgType==12:
-            print "Permission Denied."
+            print("Permission Denied.")
             return
-            
+
         #Type 22 = UserStats
         if msgType==22:
             message=self.parseMessage(msgType,stringMessage)
@@ -516,43 +541,44 @@ class mumbleConnection(threading.Thread):
                 self.userList[message.session]["idlesecs"]["checkon"] = -1
             self.userList[message.session]["idlesecs"]["checksent"] = False
             return
-        
-    
+
+
     def run(self):
         try:
             self.socket.connect(self.host)
         except Exception as inst:
-            print type(inst)
-            print inst
-            print time.strftime("%a, %d %b %Y %H:%M:%S +0000"),self.threadName,"Couldn't connect to server"
+            print(inst)
+            print("%s: Couldn't connect to server" % (time.strftime("%a, %d %b %Y %H:%M:%S +0000"),))
+            global controlbreak
+            controlbreak=True
             return
         self.socket.setblocking(False)
-        print time.strftime("%a, %d %b %Y %H:%M:%S +0000"),self.threadName,"connected to server"
+        print("[%s] %s: Connected to server" % (self.threadName,time.strftime("%a, %d %b %Y %H:%M:%S +0000")))
         pbMess = Mumble_pb2.Version()
         pbMess.release="1.2.8"
         pbMess.version=66052
         pbMess.os=platform.system()
         pbMess.os_version="AFKBot0.5.0"
-        
+
         initialConnect=self.packageMessageForSending(messageLookupMessage[type(pbMess)],pbMess.SerializeToString())
-        
+
         pbMess = Mumble_pb2.Authenticate()
         pbMess.username=self.nickname
         if self.password!=None:
             pbMess.password=self.password
         celtversion=pbMess.celt_versions.append(-2147483637)
-        
+
         initialConnect+=self.packageMessageForSending(messageLookupMessage[type(pbMess)],pbMess.SerializeToString())
-        
+
         if not self.sendTotally(initialConnect):
             return
-        
+
         sockFD=self.socket.fileno()
-        
+
         self.timedWatcher = timedWatcher(self.socketLock,self.socket)
         self.timedWatcher.start()
-        print time.strftime("%a, %d %b %Y %H:%M:%S +0000"),self.threadName,"started timed watcher",self.timedWatcher.threadName
-        
+        print("[%s] %s: started timed watcher %s" % (self.threadName,time.strftime("%a, %d %b %Y %H:%M:%S +0000"),self.timedWatcher.threadName))
+
         while True:
             pollList,foo,errList=select.select([sockFD],[],[sockFD],5)
             for item in pollList:
@@ -573,25 +599,25 @@ class mumbleConnection(threading.Thread):
             if self.readyToClose:
                 self.wrapUpThread()
                 break
-        
+
         if self.timedWatcher:
             self.timedWatcher.stopRunning()
-        
+
         self.socket.close()
-        print time.strftime("%a, %d %b %Y %H:%M:%S +0000"),self.threadName,"waiting for timed watcher to die..."
+        print("[%s] %s: waiting for timed watcher to die..." % (self.threadName,time.strftime("%a, %d %b %Y %H:%M:%S +0000")));
         if self.timedWatcher!=None:
-            while self.timedWatcher.isAlive():
+            while self.timedWatcher.is_alive():
                 pass
-        print time.strftime("%a, %d %b %Y %H:%M:%S +0000"),self.threadName,"thread going away -",self.nickname
+        print("[%s] %s: thread going away - %s" % (self.threadName,time.strftime("%a, %d %b %Y %H:%M:%S +0000"),self.nickname))
 
 def main():
     global eavesdropper,warning,controlbreak
-            
+
     p = optparse.OptionParser(description='Mumble 1.2 AFKBot',
                 prog='afkbot.py',
                 version='%prog 0.5.0',
                 usage='\t%prog')
-    
+
     p.add_option("-a","--afk-channel",help="Channel to eavesdrop in (default %%Root)",action="store",type="string",default="AFK")
     p.add_option("-s","--server",help="Host to connect to (default %default)",action="store",type="string",default="localhost")
     p.add_option("-p","--port",help="Port to connect to (default %default)",action="store",type="int",default=64738)
@@ -603,13 +629,14 @@ def main():
     p.add_option("-i","--idle-time",help="Time (in minutes) before user is moved to the AFK channel",action="store",type="int",default=30);
     p.add_option("-v","--verbose",help="Outputs and translates all messages received from the server",action="store_true",default=False)
     p.add_option("--password",help="Password for server, if any",action="store",type="string")
-    
+    p.add_option("-S","--allow-self-signed",help="Allow self-signed certificates",action="store_true",default=False)
+
     if len(warning)>0:
-        print warning
+        print(warning)
     o, arguments = p.parse_args()
     if len(warning)>0:
         sys.exit(1)
-    
+
     host=(o.server,o.port)
 
     #sys.stdout = open("mumblebot.log","w")
@@ -618,19 +645,19 @@ def main():
     #daemoninstance = daemon.DaemonContext()
     #daemoninstance.stdout = logfile;
     #daemoninstance.1
-    
+
     while True:
-        eavesdropper = mumbleConnection(host,o.nick,o.afk_channel,delay=o.delay,limit=o.limit,password=o.password,verbose=o.verbose,certificate=o.certificate,idletime=o.idle_time)
+        eavesdropper = mumbleConnection(host,o.nick,o.afk_channel,delay=o.delay,limit=o.limit,password=o.password,verbose=o.verbose,certificate=o.certificate,idletime=o.idle_time,allow_self_signed=o.allow_self_signed)
         eavesdropper.start()
-    
+
         #Need to keep main thread alive to receive shutdown signal
-    
-        while eavesdropper.isAlive():
+
+        while eavesdropper.is_alive():
             time.sleep(0.5)
 
         if controlbreak == True:
             break
-        
+
     return 0
 
 if __name__ == '__main__':
