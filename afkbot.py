@@ -1,8 +1,8 @@
 #!/usr/bin/env python
 
-#Copyright (c) 2013-2015 Chuck-R <github@chuck.cloud>
+#Copyright (c) 2013-2022 Chuck-R <github@chuck.cloud>
 #
-#    Copyright (c) 2013-2015, Chuck-R <github@chuck.cloud>
+#    Copyright (c) 2013-2022, Chuck-R <github@chuck.cloud>
 #    All rights reserved.
 #
 #    Redistribution and use in source and binary forms, with or without
@@ -90,14 +90,16 @@ except:
     print("ERROR: This python program requires the python ssl module (available in python 2.6; standalone version may be at found http://pypi.python.org/pypi/ssl/)\n")
     print(warning)
     sys.exit(1)
+
+import importlib
+if importlib.util.find_spec('google') == None or importlib.util.find_spec("google.protobuf") == None:
+    print("ERROR: Google protobuf library not found. This can be installed via 'pip install protobuf'")
+    sys.exit(1)
+
 try:
     import Mumble_pb2
 except:
-    warning+="ERROR: Module Mumble_pb2 not found\n"
-    warning+="This program requires the Google Protobuffers library (http://code.google.com/apis/protocolbuffers/) to be installed\n"
-    warning+="You must run the protobuf compiler \"protoc\" on the Mumble.proto file to generate the Mumble_pb2 file\n"
-    warning+="Move the Mumble.proto file from the mumble source code into the same directory as this bot and type \"protoc --python_out=. Mumble.proto\"\n"
-    print(warning);
+    print("Error: Module Mumble_pb2 not found\nIf the file 'Mubmle_pb2.py' does not exist, then you must compile it with 'protoc --python_out=. Mumble.proto' from the script directory.")
     sys.exit(1)
 
 headerFormat=">HI"
@@ -235,8 +237,8 @@ class mumbleConnection(threading.Thread):
         self.readyToClose=False
         self.timedWatcher = None
         # TODO: Implement delay and rate limit
-        self.delay=delay
-        self.limit=limit
+        #self.delay=delay
+        #self.limit=limit
         self.password=password
         self.verbose=verbose
         self.server_certificate=None
@@ -530,7 +532,6 @@ class mumbleConnection(threading.Thread):
             self.userList[message.session]["idlesecs"]["idlesecs"] = message.idlesecs
             self.userList[message.session]["idlesecs"]["checkon"] = time.time()+((self.idleLimit*60)-message.idlesecs)
             if message.idlesecs > self.idleLimit*60 and message.session != self.session:
-                #self.userList[message.session]["idlesecs"]["oldchannel"] = self.userList[message.session]["channel"]
                 #Move user to AFK channel
                 pbMess = Mumble_pb2.UserState()
                 pbMess.session = message.session
@@ -622,9 +623,6 @@ def main():
     p.add_option("-s","--server",help="Host to connect to (default %default)",action="store",type="string",default="localhost")
     p.add_option("-p","--port",help="Port to connect to (default %default)",action="store",type="int",default=64738)
     p.add_option("-n","--nick",help="Nickname for the AFKBot (default %default)",action="store",type="string",default="AFKBot")
-    p.add_option("-d","--delay",help="Time to delay response by in seconds (default %default)",action="store",type="float",default=0)
-    p.add_option("-l","--limit",help="Maximum response per minutes (default %default, 0 = unlimited)",action="store",type="int",default=0)
-#    p.add_option("-c","--config",help="Configuration file",action="store",type="string",default="mumblebee.cfg")
     p.add_option("-c","--certificate",help="Certificate file for the bot to use when connecting to the server (.pem)",action="store",type="string",default="afkbot.pem")
     p.add_option("-i","--idle-time",help="Time (in minutes) before user is moved to the AFK channel",action="store",type="int",default=30);
     p.add_option("-v","--verbose",help="Outputs and translates all messages received from the server",action="store_true",default=False)
@@ -639,15 +637,12 @@ def main():
 
     host=(o.server,o.port)
 
-    #sys.stdout = open("mumblebot.log","w")
-    #sys.stderr = sys.stdout
-
     #daemoninstance = daemon.DaemonContext()
     #daemoninstance.stdout = logfile;
     #daemoninstance.1
 
     while True:
-        eavesdropper = mumbleConnection(host,o.nick,o.afk_channel,delay=o.delay,limit=o.limit,password=o.password,verbose=o.verbose,certificate=o.certificate,idletime=o.idle_time,allow_self_signed=o.allow_self_signed)
+        eavesdropper = mumbleConnection(host,o.nick,o.afk_channel,delay=None,limit=None,password=o.password,verbose=o.verbose,certificate=o.certificate,idletime=o.idle_time,allow_self_signed=o.allow_self_signed)
         eavesdropper.start()
 
         #Need to keep main thread alive to receive shutdown signal
