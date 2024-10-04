@@ -1,8 +1,8 @@
 #!/usr/bin/env python
 
-#Copyright (c) 2013-2022 Chuck-R <github@chuck.cloud>
+#Copyright (c) 2013-2024 Chuck-R <github@chuck.cloud>
 #
-#    Copyright (c) 2013-2022, Chuck-R <github@chuck.cloud>
+#    Copyright (c) 2013-2024, Chuck-R <github@chuck.cloud>
 #    All rights reserved.
 #
 #    Redistribution and use in source and binary forms, with or without
@@ -457,7 +457,7 @@ class mumbleConnection(threading.Thread):
         if msgType==11:
             message=self.parseMessage(msgType,stringMessage)
             if message.actor!=self.session:
-                if message.message.startswith("/roll"):
+                if message.message.lower().startswith("/roll"):
                     pbMess = Mumble_pb2.TextMessage()
                     pbMess.actor = self.session
                     pbMess.channel_id.append(self.channelId)
@@ -467,7 +467,7 @@ class mumbleConnection(threading.Thread):
                     if not self.sendTotally(self.packageMessageForSending(messageLookupMessage[type(pbMess)],pbMess.SerializeToString())):
                         self.wrapUpThread()
                     return
-                if message.message.startswith("/afkme"):
+                if message.message.lower().startswith("/afkme"):
                     pbMess = Mumble_pb2.UserState()
                     pbMess.session = message.actor
                     pbMess.actor = self.session
@@ -476,7 +476,7 @@ class mumbleConnection(threading.Thread):
                         self.wrapUpThread()
                     self.userList[message.actor]["idlesecs"]["checkon"] = -1
                     return
-                if message.message.startswith("/afk"):
+                if message.message.lower().startswith("/afk"):
                     args = message.message.split(" ",1)
                     if len(args) == 1:
                       return
@@ -499,7 +499,7 @@ class mumbleConnection(threading.Thread):
                         self.wrapUpThread()
                     self.userList[pbMess.session]["idlesecs"]["checkon"] = -1
                     return
-                if message.message.startswith("/unafk"):
+                if message.message.lower().startswith("/unafk"):
                     args = message.message.split(" ",1)
                     if len(args) == 1:
                       return
@@ -520,6 +520,14 @@ class mumbleConnection(threading.Thread):
                     if not self.sendTotally(self.packageMessageForSending(messageLookupMessage[type(pbMess)],pbMess.SerializeToString())):
                         self.wrapUpThread()
                     self.userList[pbMess.session]["idlesecs"]["checkon"] = -1
+                if message.message.lower().startswith("/set"):
+                    split = message.message.split()
+                    if split[1].lower() == "afktime":
+                        #Check permissions
+                        pass
+                    if split[1].lower() == "afkchannel":
+                        #Check permissions
+                        pass
 
         #Type 12 = PermissionDenied
         if msgType==12:
@@ -559,7 +567,7 @@ class mumbleConnection(threading.Thread):
         pbMess.release="1.2.8"
         pbMess.version=66052
         pbMess.os=platform.system()
-        pbMess.os_version="AFKBot0.5.0"
+        pbMess.os_version="AFKBot0.5.1"
 
         initialConnect=self.packageMessageForSending(messageLookupMessage[type(pbMess)],pbMess.SerializeToString())
 
@@ -616,7 +624,7 @@ def main():
 
     p = optparse.OptionParser(description='Mumble 1.2 AFKBot',
                 prog='afkbot.py',
-                version='%prog 0.5.0',
+                version='%prog 0.5.1',
                 usage='\t%prog')
 
     p.add_option("-a","--afk-channel",help="Channel to eavesdrop in (default %%Root)",action="store",type="string",default="AFK")
