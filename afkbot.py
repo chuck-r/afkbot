@@ -91,7 +91,7 @@ except:
     print(warning)
     sys.exit(1)
 
-import importlib
+import importlib.util
 if importlib.util.find_spec('google') == None or importlib.util.find_spec("google.protobuf") == None:
     print("ERROR: Google protobuf library not found. This can be installed via 'pip install protobuf'")
     sys.exit(1)
@@ -99,21 +99,48 @@ if importlib.util.find_spec('google') == None or importlib.util.find_spec("googl
 try:
     import Mumble_pb2
 except:
-    print("Error: Module Mumble_pb2 not found\nIf the file 'Mubmle_pb2.py' does not exist, then you must compile it with 'protoc --python_out=. Mumble.proto' from the script directory.")
+    print("Error: Module Mumble_pb2 not found\nIf the file 'Mumble_pb2.py' does not exist, then you must compile it with 'protoc --python_out=. Mumble.proto' from the script directory.")
     sys.exit(1)
 
 headerFormat=">HI"
 eavesdropper=None
 controlbreak = False
-messageLookupMessage={Mumble_pb2.Version:0,Mumble_pb2.UDPTunnel:1,Mumble_pb2.Authenticate:2,Mumble_pb2.Ping:3,Mumble_pb2.Reject:4,Mumble_pb2.ServerSync:5,
-        Mumble_pb2.ChannelRemove:6,Mumble_pb2.ChannelState:7,Mumble_pb2.UserRemove:8,Mumble_pb2.UserState:9,Mumble_pb2.BanList:10,Mumble_pb2.TextMessage:11,Mumble_pb2.PermissionDenied:12,
-        Mumble_pb2.ACL:13,Mumble_pb2.QueryUsers:14,Mumble_pb2.CryptSetup:15,Mumble_pb2.ContextActionModify:16,Mumble_pb2.ContextAction:17,Mumble_pb2.UserList:18,Mumble_pb2.VoiceTarget:19,
-        Mumble_pb2.PermissionQuery:20,Mumble_pb2.CodecVersion:21,Mumble_pb2.UserStats:22,Mumble_pb2.RequestBlob:23,Mumble_pb2.ServerConfig:24,Mumble_pb2.SuggestConfig:25}
+messageLookupMessage = {
+    Mumble_pb2.Version : 0,
+    Mumble_pb2.UDPTunnel : 1,
+    Mumble_pb2.Authenticate : 2,
+    Mumble_pb2.Ping : 3,
+    Mumble_pb2.Reject : 4,
+    Mumble_pb2.ServerSync : 5,
+    Mumble_pb2.ChannelRemove : 6,
+    Mumble_pb2.ChannelState : 7,
+    Mumble_pb2.UserRemove : 8,
+    Mumble_pb2.UserState : 9,
+    Mumble_pb2.BanList : 10,
+    Mumble_pb2.TextMessage : 11,
+    Mumble_pb2.PermissionDenied : 12,
+    Mumble_pb2.ACL : 13,
+    Mumble_pb2.QueryUsers : 14,
+    Mumble_pb2.CryptSetup : 15,
+    Mumble_pb2.ContextActionModify : 16,
+    Mumble_pb2.ContextAction : 17,
+    Mumble_pb2.UserList : 18,
+    Mumble_pb2.VoiceTarget : 19,
+    Mumble_pb2.PermissionQuery : 20,
+    Mumble_pb2.CodecVersion : 21,
+    Mumble_pb2.UserStats : 22,
+    Mumble_pb2.RequestBlob : 23,
+    Mumble_pb2.ServerConfig : 24,
+    Mumble_pb2.SuggestConfig : 25,
+    Mumble_pb2.PluginDataTransmission : 26
+}
+#Inversion of above
 messageLookupNumber={}
-threadNumber=0
 
 for i in messageLookupMessage.keys():
         messageLookupNumber[messageLookupMessage[i]]=i
+
+threadNumber=0
 
 class Logger(object):
     def __init__(self, filename="Default.log"):
@@ -248,17 +275,18 @@ class mumbleConnection(threading.Thread):
         #######################################
         self.idleLimit=idletime #Idle limit in minutes
         self.channel=channel #AFK channel to listen in
+
     def decodePDSInt(self,m,si=0):
-        v = ord(m[si])
+        v = m[si]
         if ((v & 0x80) == 0x00):
             return ((v & 0x7F),1)
         elif ((v & 0xC0) == 0x80):
-            return ((v & 0x4F) << 8 | ord(m[si+1]),2)
+            return ((v & 0x4F) << 8 | m[si+1],2)
         elif ((v & 0xF0) == 0xF0):
             if ((v & 0xFC) == 0xF0):
-                return (ord(m[si+1]) << 24 | ord(m[si+2]) << 16 | ord(m[si+3]) << 8 | ord(m[si+4]),5)
+                return (m[si+1] << 24 | m[si+2] << 16 | m[si+3] << 8 | m[si+4],5)
             elif ((v & 0xFC) == 0xF4):
-                return (ord(m[si+1]) << 56 | ord(m[si+2]) << 48 | ord(m[si+3]) << 40 | ord(m[si+4]) << 32 | ord(m[si+5]) << 24 | ord(m[si+6]) << 16 | ord(m[si+7]) << 8 | ord(m[si+8]),9)
+                return (m[si+1] << 56 | m[si+2] << 48 | m[si+3] << 40 | m[si+4] << 32 | m[si+5] << 24 | m[si+6] << 16 | m[si+7] << 8 | m[si+8],9)
             elif ((v & 0xFC) == 0xF8):
                 result,length=decodePDSInt(m,si+1)
                 return(-result,length+1)
@@ -268,9 +296,9 @@ class mumbleConnection(threading.Thread):
                 print("%s: Help help, out of cheese :(" % (time.strftime("%a, %d %b %Y %H:%M:%S +0000"),))
                 sys.exit(1)
         elif ((v & 0xF0) == 0xE0):
-            return ((v & 0x0F) << 24 | ord(m[si+1]) << 16 | ord(m[si+2]) << 8 | ord(m[si+3]),4)
+            return ((v & 0x0F) << 24 | m[si+1] << 16 | m[si+2] << 8 | m[si+3],4)
         elif ((v & 0xE0) == 0xC0):
-            return ((v & 0x1F) << 16 | ord(m[si+1]) << 8 | ord(m[si+2]),3)
+            return ((v & 0x1F) << 16 | m[si+1] << 8 | m[si+2],3)
         else:
             print("%s: out of cheese?" % (time.strftime("%a, %d %b %Y %H:%M:%S +0000"),))
             sys.exit(1)
@@ -332,9 +360,10 @@ class mumbleConnection(threading.Thread):
         if not stringMessage:
             self.wrapUpThread()
             return
-        #Type 1 = UDP Tunnel, voice data
+        #Type 1 = UDP Tunnel, voice data or UDP ping
         if msgType==1:
-            session,sessLen=self.decodePDSInt(stringMessage,1)
+            #I'm not sure why the third byte is session ID, but it is.
+            session,sessLen=self.decodePDSInt(stringMessage,2)
             if session in self.userList and self.userList[session]["channel"] == self.channelListByName[self.channel]:
                 if "idlesecs" in self.userList[session] and "oldchannel" in self.userList[session]["idlesecs"]:
                     pbMess = Mumble_pb2.UserState()
@@ -364,6 +393,8 @@ class mumbleConnection(threading.Thread):
         if msgType == 7: #(not self.inChannel) and msgType==7 and self.channelId==None:
             message=self.parseMessage(msgType,stringMessage)
             if message.channel_id not in self.channelList or self.channelList[message.channel_id] != message.name:
+                if not len(message.name):
+                    return
                 self.channelList[message.channel_id]=message.name
                 self.channelListByName[message.name]=message.channel_id
             if (not self.inChannel) and self.channelId==None:
@@ -411,7 +442,7 @@ class mumbleConnection(threading.Thread):
                 record["channel"]=0
             channelName = self.channelList[record["channel"]]
             #If they're not already in the AFK channel
-            if message.channel_id != self.channelListByName[self.channel]:
+            if self.channel in self.channelListByName and message.channel_id != self.channelListByName[self.channel]:
                 #Send a query for UserStats -- needed to get idletime
                 if "idlesecs" in record:
                     record["idlesecs"]["checksent"] = True
@@ -564,10 +595,23 @@ class mumbleConnection(threading.Thread):
         self.socket.setblocking(False)
         print("[%s] %s: Connected to server" % (self.threadName,time.strftime("%a, %d %b %Y %H:%M:%S +0000")))
         pbMess = Mumble_pb2.Version()
-        pbMess.release="1.2.8"
-        pbMess.version=66052
+        pbMess.release="AFKBot 0.5.2"
+        version = {
+                "major" : 1,
+                "minor" : 5,
+                "build" : 634
+        }
+        computed_version = (version["major"] << 16)+(version["minor"] << 8)+(version["build"] if version["build"] <=255 else 255)
+        pbMess.version_v1=computed_version
+        version = {
+                "major" : 1,
+                "minor" : 5,
+                "build" : 634
+        }
+        computed_version = (version["major"] << 48)+(version["minor"] << 32)+(version["build"] << 16)
+        pbMess.version_v2=computed_version
         pbMess.os=platform.system()
-        pbMess.os_version="AFKBot0.5.1"
+        pbMess.os_version="AFKBot 0.5.2"
 
         initialConnect=self.packageMessageForSending(messageLookupMessage[type(pbMess)],pbMess.SerializeToString())
 

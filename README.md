@@ -15,7 +15,7 @@ Unlike other voice chat clients, Mumble does not provide a mechanism to specify 
 3. PEM-format user certificate. By default, Mumble generates a PCKS#12 certificate that must be converted to PEM format for use by the bot script. In order to convert a PKCS#12 certificate into PEM format using OpenSSL, use the following command: `openssl pkcs12 -in cert.p12 -out cert.pem -nodes`
 
 ### Arguments ###
-    Mumble 1.4 AFKBot
+    Mumble 1.5 AFKBot
 
     Options:
       --version             Show program's version number and exit
