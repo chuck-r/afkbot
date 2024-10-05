@@ -1,1 +1,4 @@
 *.pyc
+*.pem
+*.log
+__pycache__/
