@@ -84,7 +84,6 @@ import time
 
 from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
-from cryptography.hazmat.primitives.serialization import pkcs12
 from cryptography.hazmat.primitives.asymmetric import rsa
 from pathlib import Path
 
@@ -107,6 +106,8 @@ try:
 except Exception:
     print("Error: Module Mumble_pb2 not found\nIf the file 'Mumble_pb2.py' does not exist, then you must compile it with 'protoc --python_out=. Mumble.proto' from the script directory.")
     sys.exit(1)
+
+afkbot_version = "0.5.4"
 
 headerFormat = ">HI"
 eavesdropper = None
@@ -252,13 +253,16 @@ class timedWatcher(threading.Thread):
                 packet = struct.pack(headerFormat, 3, pbMess.ByteSize()) + pbMess.SerializeToString()
                 self.socketLock.acquire()
                 while len(packet) > 0:
-                    sent = self.socket.send(packet)
+                    try:
+                        sent = self.socket.send(packet)
+                    except Exception:
+                        sent = 0
                     packet = packet[sent:]
                 self.socketLock.release()
                 self.nextPing = t+10
             # sleeptime=self.nextPing-t
             # if sleeptime > 0:
-            time.sleep(0.5)
+            time.sleep(1)
         print("%s: timed thread going away" % (time.strftime("%a, %d %b %Y %H:%M:%S +0000"),))
 
 
@@ -285,7 +289,6 @@ class mumbleConnection(threading.Thread):
             if not os.path.exists("server.pem"):
                 print("Downloading server certificate")
                 server_cert = ssl.get_server_certificate(host, ssl.PROTOCOL_TLS_CLIENT)
-                print("len(server_cert): %d" % (len(server_cert),))
                 with open("server.pem", "wb") as file:
                     file.write(server_cert.encode())
             self.socket.load_verify_locations(cafile="server.pem")
@@ -315,7 +318,7 @@ class mumbleConnection(threading.Thread):
         #######################################
         # AFKBot-specific config
         #######################################
-        self.idleLimit = idletime  # Idle limit in minutes
+        self.idleLimit = idletime  # Idle limit in seconds
         self.channel = channel  # AFK channel to listen in
 
     def decodePDSInt(self, m, si=0):
@@ -401,7 +404,8 @@ class mumbleConnection(threading.Thread):
         msgType, length = struct.unpack(headerFormat, meta)
         stringMessage = self.readTotally(length)
         if not stringMessage:
-            self.wrapUpThread()
+            # An empty payload isn't necessarily a panic condition. I've seen packets
+            # such as CryptSetup with no payload
             return
         # Type 1 = UDP Tunnel, voice data or UDP ping
         if msgType == 1:
@@ -434,7 +438,7 @@ class mumbleConnection(threading.Thread):
                         self.userList[item]["idleinfo"]["oldchannel"] = 0
         # Type 7 = ChannelState
         if msgType == 7:  # (not self.inChannel) and msgType==7 and self.channelId==None:
-            message=self.parseMessage(msgType, stringMessage)
+            message = self.parseMessage(msgType, stringMessage)
             if message.channel_id not in self.channelList or self.channelList[message.channel_id] != message.name:
                 if not len(message.name):
                     return
@@ -448,7 +452,7 @@ class mumbleConnection(threading.Thread):
                 if message.name == self.channel:
                     self.channelId = message.channel_id
                     self.joinChannel()
-        # Type 8 = UserRemove (kick)
+        # Type 8 = UserRemove (kick/leave)
         if msgType == 8:
             message = self.parseMessage(msgType, stringMessage)
             if self.session is not None:
@@ -458,12 +462,13 @@ class mumbleConnection(threading.Thread):
                     return
             session = message.session
             if session in self.userList:
-                temp = self.userList[session]
                 del self.userListByName[self.userList[session]["name"]]
                 del self.userList[session]
         # Type 9 = UserState
         if msgType == 9:
             message = self.parseMessage(msgType, stringMessage)
+            if "suppress" in message:
+                return
             session = message.session
             if session in self.userList:
                 record = self.userList[session]
@@ -472,7 +477,7 @@ class mumbleConnection(threading.Thread):
                 self.userList[session] = record
             name = None
             channel = None
-            if message.HasField("name"):
+            if "name" in message:
                 name = message.name
                 if "name" in record and record["name"] in self.userListByName:
                     del self.userListByName[record["name"]]
@@ -483,40 +488,41 @@ class mumbleConnection(threading.Thread):
                 record["channel"] = channel
             if name and not channel:
                 record["channel"] = 0
-            if channel == None:
-                return
             channelName = self.channelList[record["channel"]]
+
             # If they're not already in the AFK channel
             if self.channel in self.channelListByName and message.channel_id != self.channelListByName[self.channel]:
                 # Send a query for UserStats -- needed to get idletime
-                if "idleinfo" in record:
-                    record["idleinfo"]["checksent"] = True
+                if "idleinfo" not in record:
+                    record["idleinfo"] = {"checkon": -1, "oldchannel": message.channel_id}
+                else:
+                    record["idleinfo"]["checkon"] = -1
                     record["idleinfo"]["oldchannel"] = message.channel_id
-                else:
-                    record["idleinfo"] = {"checksent": True, "oldchannel": message.channel_id}
-                if message.HasField("actor"):  # and message.actor != self.session:
-                    record["idleinfo"]["checksent"] = False
-                    record["idleinfo"]["checkon"] = time.time()+self.idleLimit*60
-                else:
+                if message.actor != self.session:
                     pbMess = Mumble_pb2.UserStats()
                     pbMess.session = session
                     if not self.sendTotally(self.packageMessageForSending(messageLookupMessage[type(pbMess)], pbMess.SerializeToString())):
                         self.wrapUpThread()
             else:
                 if "idleinfo" in record:
-                    record["idleinfo"]["checksent"] = False
                     record["idleinfo"]["checkon"] = -1
                     # if "oldchannel" not in record["idleinfo"]:
                     #     record["idleinfo"]["oldchannel"] = 0
                     # else:
                     #     record["idleinfo"]["oldchannel"] = message.channel_id
                 else:
-                    record["idleinfo"] = {"checksent": False, "checkon": -1, "oldchannel": 0}
+                    record["idleinfo"] = {"checkon": -1, "oldchannel": 0}
+                if message.actor == self.session and\
+                   message.session != self.session and\
+                   record["idleinfo"]["moving"] is True:
+                    record["idleinfo"]["moving"] = False
+            self.userList[session] = record
+
             if self.inChannel and channelName == "Private Chats":
                 pbMess = Mumble_pb2.TextMessage()
                 pbMess.actor = self.session
                 pbMess.session.append(message.session)
-                pbMess.message = "This is the Private Chats channel. To create a sub-channel, right click Private Chats and select 'Add'. Name your channel and check the 'Temporary' checkbox.";
+                pbMess.message = "This is the Private Chats channel. To create a sub-channel, right click Private Chats and select 'Add'. Name your channel and check the 'Temporary' checkbox."
                 if not self.sendTotally(self.packageMessageForSending(messageLookupMessage[type(pbMess)], pbMess.SerializeToString())):
                     self.wrapUpThread()
             if self.inChannel and channelName in ("Castle Wars", "Zamorak", "Saradomin"):
@@ -524,7 +530,7 @@ class mumbleConnection(threading.Thread):
                 pbMess = Mumble_pb2.TextMessage()
                 pbMess.actor = self.session
                 pbMess.session.append(message.session)
-                pbMess.message = "Welcome to the Castle Wars channels! In this channel setup you can set up a hotkey for Shout with a target of the parent channel to send messages to the opposing team.";
+                pbMess.message = "Welcome to the Castle Wars channels! In this channel setup you can set up a hotkey for Shout with a target of the parent channel to send messages to the opposing team."
                 if not self.sendTotally(self.packageMessageForSending(messageLookupMessage[type(pbMess)], pbMess.SerializeToString())):
                     self.wrapUpThread()
             return
@@ -560,7 +566,6 @@ class mumbleConnection(threading.Thread):
                     for key in self.userListByName:
                         if key.lower() == args[1].lower():
                             pbMess.session = self.userListByName[key]
-                    print(pbMess.session)
                     if pbMess.session == 0:
                         pbMess = Mumble_pb2.TextMessage()
                         pbMess.actor = self.session
@@ -607,15 +612,14 @@ class mumbleConnection(threading.Thread):
 
         # Type 12 = PermissionDenied
         if msgType == 12:
-            print("Permission Denied.")
+            print("[%s] %s: Permission Denied." % (self.threadName, time.strftime("%a, %d %b %Y %H:%M:%S +0000")))
             return
 
         # Type 22 = UserStats
         if msgType == 22:
             message = self.parseMessage(msgType, stringMessage)
-            self.userList[message.session]["idleinfo"]["idlesecs"] = message.idlesecs
-            self.userList[message.session]["idleinfo"]["checkon"] = time.time()+((self.idleLimit*60)-message.idlesecs)
-            if message.idlesecs > self.idleLimit*60 and message.session != self.session:
+            # Timer already expired
+            if message.idlesecs >= self.idleLimit and message.session != self.session:
                 # Move user to AFK channel
                 pbMess = Mumble_pb2.UserState()
                 pbMess.session = message.session
@@ -624,7 +628,8 @@ class mumbleConnection(threading.Thread):
                 if not self.sendTotally(self.packageMessageForSending(messageLookupMessage[type(pbMess)], pbMess.SerializeToString())):
                     self.wrapUpThread()
                 self.userList[message.session]["idleinfo"]["checkon"] = -1
-            self.userList[message.session]["idleinfo"]["checksent"] = False
+            else:
+                self.userList[message.session]["idleinfo"]["checkon"] = time.time()+(self.idleLimit-message.idlesecs)
             return
 
     def run(self):
@@ -632,30 +637,26 @@ class mumbleConnection(threading.Thread):
             self.socket.connect(self.host)
         except Exception as inst:
             print(inst)
-            print("%s: Couldn't connect to server" % (time.strftime("%a, %d %b %Y %H:%M:%S +0000"),))
+            print("[%s] %s: Couldn't connect to server" % (self.threadname, time.strftime("%a, %d %b %Y %H:%M:%S +0000")))
             global controlbreak
             controlbreak = True
             return
         self.socket.setblocking(False)
         print("[%s] %s: Connected to server" % (self.threadName, time.strftime("%a, %d %b %Y %H:%M:%S +0000")))
         pbMess = Mumble_pb2.Version()
-        pbMess.release = "AFKBot 0.5.3"
+        pbMess.release = pbMess.os_version = f"AFKBot {afkbot_version}"
         version = {
                 "major": 1,
                 "minor": 5,
                 "build": 634
         }
-        computed_version = (version["major"] << 16)+(version["minor"] << 8)+(version["build"] if version["build"] <= 255 else 255)
-        pbMess.version_v1 = computed_version
-        version = {
-                "major": 1,
-                "minor": 5,
-                "build": 634
-        }
-        computed_version = (version["major"] << 48)+(version["minor"] << 32)+(version["build"] << 16)
-        pbMess.version_v2 = computed_version
+        pbMess.version_v1 = (version["major"] << 16) +\
+            (version["minor"] << 8) +\
+            (version["build"] if version["build"] <= 255 else 255)
+        pbMess.version_v2 = (version["major"] << 48) +\
+            (version["minor"] << 32) +\
+            (version["build"] << 16)
         pbMess.os = platform.system()
-        pbMess.os_version = "AFKBot 0.5.3"
 
         initialConnect = self.packageMessageForSending(messageLookupMessage[type(pbMess)], pbMess.SerializeToString())
 
@@ -677,7 +678,7 @@ class mumbleConnection(threading.Thread):
         print("[%s] %s: started timed watcher %s" % (self.threadName, time.strftime("%a, %d %b %Y %H:%M:%S +0000"), self.timedWatcher.threadName))
 
         while True:
-            pollList, foo, errList = select.select([sockFD], [], [sockFD], 5)
+            pollList, foo, errList = select.select([sockFD], [], [sockFD], 1)
             for item in pollList:
                 if item == sockFD:
                     try:
@@ -687,12 +688,19 @@ class mumbleConnection(threading.Thread):
             for session in self.userList:
                 record = self.userList[session]
                 if "idleinfo" in record:
-                    if record["name"] != self.nickname and record["idleinfo"]["checksent"] is False and record["idleinfo"]["checkon"] > -1 and record["idleinfo"]["checkon"] < time.time():
+                    if record["name"] != self.nickname and\
+                      record["idleinfo"]["checkon"] > -1 and\
+                      record["idleinfo"]["checkon"] <= time.time() and\
+                      ("moving" not in record["idleinfo"] or
+                       record["idleinfo"]["moving"] is False):
                         pbMess = Mumble_pb2.UserStats()
                         pbMess.session = session
                         if not self.sendTotally(self.packageMessageForSending(messageLookupMessage[type(pbMess)], pbMess.SerializeToString())):
                             self.wrapUpThread()
-                        record["idleinfo"]["checksent"] = True
+                        # Clear idle info, it will be populated from UserStats when it arrives
+                        record["idleinfo"]["checkon"] = -1
+                        record["idleinfo"]["moving"] = True
+                        self.userList[session] = record
             if self.readyToClose:
                 self.wrapUpThread()
                 break
@@ -725,7 +733,7 @@ def main():
 
     p = optparse.OptionParser(description='Mumble 1.5 AFKBot',
                               prog='afkbot.py',
-                              version='%prog 0.5.3',
+                              version=f'%prog {afkbot_version}',
                               usage='\t%prog')
 
     p.add_option("-a", "--afk-channel", help="Channel to eavesdrop in (default %%Root)", action="store", type="string", default="AFK")
@@ -733,7 +741,7 @@ def main():
     p.add_option("-p", "--port", help="Port to connect to (default %default)", action="store", type="int", default=64738)
     p.add_option("-n", "--nick", help="Nickname for the AFKBot (default %default)", action="store", type="string", default="AFKBot")
     p.add_option("-c", "--certificate", help="Certificate file for the bot to use when connecting to the server (.pem)", action="store", type="string", default="afkbot.pem")
-    p.add_option("-i", "--idle-time", help="Time (in minutes) before user is moved to the AFK channel", action="store", type="int", default=30)
+    p.add_option("-i", "--idle-time", help="Minutes before user is moved to the AFK channel. Use [number]s for seconds.", action="store", type="string", default=30)
     p.add_option("-v", "--verbose", help="Outputs and translates all messages received from the server", action="store_true", default=False)
     p.add_option("--password", help="Password for server, if any", action="store", type="string")
     p.add_option("-S", "--allow-self-signed", help="Allow self-signed certificates", action="store_true", default=False)
@@ -746,6 +754,12 @@ def main():
             GenerateCertificate(o.certificate)
         except Exception as e:
             print(e)
+
+    # Allow idletime in seconds for debugging purposes
+    if o.idle_time[-1:] != "s":
+        o.idle_time = int(o.idle_time)*60
+    else:
+        o.idle_time = int(o.idle_time[:-1])
 
     host = (o.server, o.port)
 
