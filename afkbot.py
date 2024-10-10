@@ -113,7 +113,7 @@ except Exception:
           "'protoc --python_out=. Mumble.proto' from the script directory.")
     sys.exit(1)
 
-afkbot_version = "0.8.0"
+afkbot_version = "0.8.1"
 
 headerFormat = ">HI"
 eavesdropper = None
@@ -1039,24 +1039,32 @@ def main():
 
     config_dirs = {
             "linux": (env_vars["HOME"] + "/.config/afkbot",
-                      env_vars["HOME"]),
+                      env_vars["HOME"],
+                      "/etc/afkbot"),
             "freebsd": (env_vars["HOME"] + "/.config/afkbot",
-                        env_vars["HOME"]),
-            "darwin": (env_vars["HOME"] + "/Application Support/afkbot",
-                       env_vars["HOME"]),
+                        env_vars["HOME"],
+                        "/etc/afkbot"),
+            "darwin": (env_vars["HOME"] + "Library/Application Support/afkbot",
+                       env_vars["HOME"],
+                       "/Library/Application Support/afkbot"),
             "win32": (env_vars["LOCALAPPDATA"] + "\\afkbot",
-                      env_vars["USERPROFILE"] + "\\afkbot")
+                      env_vars["USERPROFILE"] + "\\afkbot",
+                      "C:\\ProgramData\\afkbot")
             }
 
     data_dirs = {
             "linux": (env_vars["HOME"] + "/.local/share/afkbot",
-                      env_vars["HOME"]),
+                      env_vars["HOME"],
+                      "/var/lib/afkbot"),
             "freebsd": (env_vars["HOME"] + "/.local/share/afkbot",
-                        env_vars["HOME"]),
+                        env_vars["HOME"],
+                        "/var/lib/afkbot"),
             "darwin": (env_vars["HOME"] + "/Application Support/afkbot",
-                       env_vars["HOME"]),
+                       env_vars["HOME"],
+                       "/Library/Application Support/afkbot"),
             "win32": (env_vars["LOCALAPPDATA"] + "\\afkbot",
-                      env_vars["USERPROFILE"] + "\\afkbot")
+                      env_vars["USERPROFILE"] + "\\afkbot",
+                      "C:\\ProgramData\\afkbot")
             }
 
     os_match = None
