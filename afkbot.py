@@ -113,7 +113,7 @@ except Exception:
           "'protoc --python_out=. Mumble.proto' from the script directory.")
     sys.exit(1)
 
-afkbot_version = "0.8.2"
+afkbot_version = "0.8.3"
 
 headerFormat = ">HI"
 eavesdropper = None
@@ -147,6 +147,36 @@ messageIDByMessageType = {
     Mumble_pb2.ServerConfig: 24,
     Mumble_pb2.SuggestConfig: 25,
     Mumble_pb2.PluginDataTransmission: 26
+}
+
+messageTypeNameById = {
+    0: "Version",
+    1: "UDPTunnel",
+    2: "Authenticate",
+    3: "Ping",
+    4: "Reject",
+    5: "ServerSync",
+    6: "ChannelRemove",
+    7: "ChannelState",
+    8: "UserRemove",
+    9: "UserState",
+    10: "BanList",
+    11: "TextMessage",
+    12: "PermissionDenied",
+    13: "ACL",
+    14: "QueryUsers",
+    15: "CryptSetup",
+    16: "ContextActionModify",
+    17: "ContextAction",
+    18: "UserList",
+    19: "VoiceTarget",
+    20: "PermissionQuery",
+    21: "CodecVersion",
+    22: "UserStats",
+    23: "RequestBlob",
+    24: "ServerConfig",
+    25: "SuggestConfig",
+    26: "PluginDataTransmission"
 }
 # Inversion of above
 messageTypeByID = {}
@@ -225,9 +255,10 @@ def CopyConfig(src, dest):
 
 class Logger(object):
     def __init__(self, filename=None, copyfrom=None, config=None):
-        self.original_stdout = sys.stdout
+        self.originalStdout = sys.stdout
         self.terminal = sys.stdout
         self.config = config
+        self.lastPrintWasVerbose = False
         if filename is None:
             self.internal_log = True
             self.log_buffer = ""
@@ -247,29 +278,32 @@ class Logger(object):
                 except Exception as e:
                     self.terminal.write("ERROR: Could not write to log file: "
                                         f"{e}\n")
-                self.original_stdout = copyfrom.original_stdout
+                self.originalStdout = copyfrom.originalStdout
 
     def write(self, message):
-        verbose = False
+        if message == os.linesep and self.lastPrintWasVerbose:
+            self.lastPrintWasVerbose = False
+            return
         if message.startswith("VERBOSE: "):
+            # print() makes a separate call to write() for the line separator,
+            # apparently. So, even if the verbose message is filtered out, a
+            # blank line is still output via print(). So, we have to track if
+            # we are currently printing a verbose log line. If so, we have to
+            # filter out the newline. This means that for each verbose log
+            # message, we also have to append a new line to the string. I'm
+            # positive there is a bettery way to do this, but it works.
+            self.lastPrintWasVerbose = True
             if self.config is None:
                 return
             if self.config is not None \
                and self.config["AFKBot"]["Verbose"] is False:
                 return
             else:
-                verbose = True
-                message = message[len("VERBOSE: "):]
+                message = message[len("VERBOSE: "):] + os.linesep
         if message.startswith("ERROR: "):
-            if verbose:
-                self.terminal.write(f"\x1B[91m{message}\x1B[0m{os.linesep}")
-            else:
-                self.terminal.write(f"\x1B[91m{message}\x1B[0m")
+            self.terminal.write(f"\x1B[91m{message}\x1B[0m")
         elif message.startswith("WARN"):
-            if verbose:
-                self.terminal.write(f"\x1B[91m{message}\x1B[0m{os.linesep}")
-            else:
-                self.terminal.write(f"\x1B[93m{message}\x1B[0m")
+            self.terminal.write(f"\x1B[93m{message}\x1B[0m")
         else:
             self.terminal.write(message)
         if self.internal_log:
@@ -507,9 +541,11 @@ class mumbleConnection(threading.Thread):
         return temp_message
 
     def joinChannel(self):
-        if self.channelId is not None and self.session is not None:
+        if self.channelId is None:
+            print(f"Could not find channel {self.channel}")
+            return
+        if not self.inChannel:
             pb_message = Mumble_pb2.UserState()
-            pb_message.session = self.session
             pb_message.channel_id = self.channelId
             pb_message_id = messageIDByMessageType[type(pb_message)]
             pb_message_string = pb_message.SerializeToString()
@@ -517,6 +553,8 @@ class mumbleConnection(threading.Thread):
             if not self.sendTotally(pb_message):
                 self.wrapUpThread()
                 return
+        else:
+            print("VERBOSE: joinChannel(): Already in a channel!")
 
     def wrapUpThread(self):
         # called after thread is confirmed to be needing to die because of
@@ -554,12 +592,29 @@ class mumbleConnection(threading.Thread):
                                                      pb_message_string)
                     if not self.sendTotally(pb_message):
                         self.wrapUpThread()
+                    oldchan = self.userList[session]["idleinfo"]["oldchannel"]
+                    print(f"VERBOSE: Moving {self.userList[session]['name']} "
+                          "back to "
+                          f"{self.channelList[oldchan]}")
+
         # Type 5 = ServerSync
-        if message_type == 5 and not self.session:
+        if message_type == 5 and not self.inChannel:
             message = self.parseMessage(message_type, stringMessage)
             self.serverSync = True
             self.session = message.session
+            # Send channel join message
             self.joinChannel()
+            # Query collected user stats
+            for item in self.userListByName:
+                pb_message = Mumble_pb2.UserStats()
+                pb_message.session = self.session
+                pb_message_id = messageIDByMessageType[type(pb_message)]
+                pb_message_string = pb_message.SerializeToString()
+                pb_message = self.packageMessage(pb_message_id,
+                                                 pb_message_string)
+                if not self.sendTotally(pb_message):
+                    self.wrapUpThread()
+
         # Type 6 = ChannelRemove
         if message_type == 6:
             message = self.parseMessage(message_type, stringMessage)
@@ -575,6 +630,7 @@ class mumbleConnection(threading.Thread):
                     if self.userList[item]["idleinfo"]["oldchannel"] \
                        == channelid:
                         self.userList[item]["idleinfo"]["oldchannel"] = 0
+
         # Type 7 = ChannelState
         if message_type == 7:
             message = self.parseMessage(message_type, stringMessage)
@@ -584,16 +640,12 @@ class mumbleConnection(threading.Thread):
                     return
                 self.channelList[message.channel_id] = message.name
                 self.channelListByName[message.name] = message.channel_id
-            if (not self.inChannel) and self.channelId is None:
-                if self.channel is None and message.channel_id == 0:
-                    self.channel = message.name
+            if not self.inChannel and self.channelId is None:
+                if message.name == self.channel:
                     self.channelId = message.channel_id
                     if self.serverSync is True:
                         self.joinChannel()
-                elif message.name == self.channel:
-                    self.channelId = message.channel_id
-                    if self.serverSync is True:
-                        self.joinChannel()
+
         # Type 8 = UserRemove (kick/leave)
         if message_type == 8:
             message = self.parseMessage(message_type, stringMessage)
@@ -607,6 +659,7 @@ class mumbleConnection(threading.Thread):
             if session in self.userList:
                 del self.userListByName[self.userList[session]["name"]]
                 del self.userList[session]
+
         # Type 9 = UserState
         if message_type == 9:
             message = self.parseMessage(message_type, stringMessage)
@@ -615,6 +668,7 @@ class mumbleConnection(threading.Thread):
             name = None
             channel = None
             channel_name = None
+            actor = None
 
             if "session" in self.userList:
                 record = self.userList[session]
@@ -628,83 +682,94 @@ class mumbleConnection(threading.Thread):
             if "channel_id" in message:
                 record["channel"] = message.channel_id
                 channel = message.channel_id
+            if "actor" in message:
+                actor = message.actor
             if channel is None and session in self.userList \
                and "channel" in self.userList[session]:
                 channel = self.userList[session]["channel"]
+            # If channel is still None, Root is assumed. When the server first
+            # sends UserState messages, if the user is in the root channel when
+            # the bot enters the root channel initially, the server will not
+            # include the channel_id field for some reason.
+            if channel is None:
+                channel = 0
 
-            if not self.inChannel and channel in self.channelList:
+            if not self.session and name == self.nickname:
+                print(f"VERBOSE: Bot session: {session}")
+                self.session = session
+
+            # Got a message back stating that we moved ourselves, we are
+            # now in the channel
+            if not self.inChannel and channel in self.channelList \
+               and actor == self.session and session == self.session:
+                print("VERBOSE: Moved ourselves to "
+                      f"'{self.channelList[channel]}'")
                 self.inChannel = True
 
-            # Keep any data that wasn't from this packet
+            # Keep any data in userList that wasn't from this packet
             if session in self.userList:
                 for item in self.userList[session]:
                     record[item] = self.userList[session][item]
-                if "channel" in self.userList[session]:
+                if "channel" in self.userList[session] \
+                   and self.userList[session]["channel"] in self.channelList:
                     channel_name = \
                         self.channelList[self.userList[session]["channel"]]
-            # No info on user, send a UserStats
+            # No info on user, send a UserStats to fill in idle info
             else:
-                pb_message = Mumble_pb2.UserStats()
-                pb_message.session = session
-                pb_message_id = messageIDByMessageType[type(pb_message)]
-                pb_message_string = pb_message.SerializeToString()
-                pb_message = self.packageMessage(pb_message_id,
-                                                 pb_message_string)
-                if not self.sendTotally(pb_message):
-                    self.wrapUpThread()
+                # Only if ServerSync message received
+                if self.serverSync:
+                    pb_message = Mumble_pb2.UserStats()
+                    pb_message.session = session
+                    pb_message_id = messageIDByMessageType[type(pb_message)]
+                    pb_message_string = pb_message.SerializeToString()
+                    pb_message = self.packageMessage(pb_message_id,
+                                                     pb_message_string)
+                    if not self.sendTotally(pb_message):
+                        self.wrapUpThread()
             self.userList[session] = record
 
             if name:
-                self.userListByName[name] = message.session
+                self.userListByName[name] = session
 
             # Set idle information on actor
-            if "actor" in message and message.actor != self.session:
-                record = self.userList[message.actor]
+            if actor and actor != self.session:
+                if actor in self.userList:
+                    record = self.userList[actor]
 
-            # If they're not already in the AFK channel
-            if self.channel in self.channelListByName \
-               and message.channel_id != self.channelListByName[self.channel]:
-                # Send a query for UserStats -- needed to get idletime
-                if "idleinfo" not in record:
-                    record["idleinfo"] = {
-                        "checkon": -1,
-                        "oldchannel": message.channel_id,
-                        "moving": False
-                        }
-                else:
-                    record["idleinfo"]["checkon"] = -1
-                    record["idleinfo"]["oldchannel"] = message.channel_id
+            # If AFK channel is known
+            if self.channel in self.channelListByName:
+                # User is not in AFK channel
+                if channel != self.channelId:
+                    if "idleinfo" not in record:
+                        record["idleinfo"] = {}
+                    record["idleinfo"]["checkon"] = time.time()+self.idleLimit
+                    record["idleinfo"]["oldchannel"] = channel
                     record["idleinfo"]["moving"] = False
+                # User is in AFK channel
+                else:
+                    if "idleinfo" in record:
+                        record["idleinfo"]["checkon"] = -1
+                    else:
+                        record["idleinfo"] = {"checkon": -1, "oldchannel": 0}
+                    if actor and actor == self.session and \
+                       session != self.session and \
+                       record["idleinfo"]["moving"] is True:
+                        record["idleinfo"]["moving"] = False
             else:
-                if "idleinfo" in record:
-                    record["idleinfo"]["checkon"] = -1
-                else:
-                    record["idleinfo"] = {"checkon": -1, "oldchannel": 0}
-                if "actor" in message and message.actor == self.session and \
-                   message.session != self.session and \
-                   record["idleinfo"]["moving"] is True:
-                    record["idleinfo"]["moving"] = False
+                print("VERBOSE: No channel info yet for AFK channel")
 
-            # Update idleinfo for user seding message
+            # Update idleinfo for user sending message
             update_user = session
             to_update = self.userList[session]
-            if "actor" in message and message.actor != self.session:
-                update_user = message.actor
-                to_update = self.userList[message.actor]
+            if actor and actor != self.session:
+                update_user = actor
+                to_update = self.userList[actor]
 
             temp_idleinfo = record["idleinfo"]
             for item in to_update:
                 record[item] = to_update[item]
             record["idleinfo"] = temp_idleinfo
             self.userList[update_user] = record
-
-            pb_message = Mumble_pb2.UserStats()
-            pb_message.session = update_user
-            pb_message_id = messageIDByMessageType[type(pb_message)]
-            pb_message_string = pb_message.SerializeToString()
-            if not self.sendTotally(self.packageMessage(pb_message_id,
-                                    pb_message_string)):
-                self.wrapUpThread()
 
             if channel_name:
                 if self.inChannel and channel_name == "Private Chats":
@@ -860,14 +925,20 @@ class mumbleConnection(threading.Thread):
         if message_type == 22:
             message = self.parseMessage(message_type, stringMessage)
 
+            # Don't act on ourselves
+            if message.session == self.session:
+                return
+
             # Timer already expired
-            if message.idlesecs >= self.idleLimit and self.inChannel \
-               and message.session != self.session:
+            if message.idlesecs >= self.idleLimit and self.inChannel:
+                print("VERBOSE: Sending UserState() to move user "
+                      f"{self.userList[message.session]['name']}")
                 # Move user to AFK channel
                 pb_message = Mumble_pb2.UserState()
                 pb_message.session = message.session
                 pb_message.actor = self.session
-                pb_message.channel_id = self.channelListByName[self.channel]
+                pb_message.channel_id = \
+                    self.channelListByName[self.channel]
                 pb_message_id = messageIDByMessageType[type(pb_message)]
                 pb_message_string = pb_message.SerializeToString()
                 pb_message = self.packageMessage(pb_message_id,
@@ -876,6 +947,8 @@ class mumbleConnection(threading.Thread):
                     self.wrapUpThread()
                 self.userList[message.session]["idleinfo"]["checkon"] = -1
             else:
+                print("VERBOSE: Setting new timeout on user "
+                      f"{self.userList[message.session]['name']}")
                 self.userList[message.session]["idleinfo"]["checkon"] = \
                     time.time()+(self.idleLimit-message.idlesecs)
             return
@@ -911,7 +984,9 @@ class mumbleConnection(threading.Thread):
         pb_message_string = pb_message.SerializeToString()
         pb_message = self.packageMessage(pb_message_id, pb_message_string)
 
-        initial_connect = pb_message
+        if not self.sendTotally(pb_message):
+            print("ERROR: Could not send Version packet")
+            return
 
         pb_message = Mumble_pb2.Authenticate()
         pb_message.username = self.nickname
@@ -925,9 +1000,9 @@ class mumbleConnection(threading.Thread):
         pb_message_id = messageIDByMessageType[type(pb_message)]
         pb_message_string = pb_message.SerializeToString()
         pb_message = self.packageMessage(pb_message_id, pb_message_string)
-        initial_connect += pb_message
 
-        if not self.sendTotally(initial_connect):
+        if not self.sendTotally(pb_message):
+            print("ERROR: Could not send Authenicate packet")
             return
 
         sockFD = self.socket.fileno()
@@ -957,6 +1032,9 @@ class mumbleConnection(threading.Thread):
                        record["idleinfo"]["moving"] is False):
                         pb_message = Mumble_pb2.UserStats()
                         pb_message.session = session
+                        # pb_message.actor = self.session
+                        # pb_message.channel_id = \
+                        #     self.channelListByName[self.channel]
                         pb_message_id = \
                             messageIDByMessageType[type(pb_message)]
                         pb_message_string = pb_message.SerializeToString()
@@ -1303,7 +1381,7 @@ def main():
         if i[0] in config["AFKBot"]:
             if os.path.isdir(config["AFKBot"][i[0]]):
                 d = config["AFKBot"][i[0]]
-                print(f"VERBOSE: config['AFKBot']['{i[0]}: '{d}'", end='')
+                print(f"VERBOSE: config['AFKBot']['{i[0]}: '{d}'")
             else:
                 try:
                     os.mkdir(config["AFKBot"][i[0]], mode=0o775)
@@ -1318,8 +1396,7 @@ def main():
             for path in i[1]:
                 if os.path.isdir(path):
                     d = path
-                    print(f"VERBOSE: config['AFKBot']['{i[0]}'] detected: {d}",
-                          end='')
+                    print(f"VERBOSE: config['AFKBot']['{i[0]}'] detected: {d}")
                     break
                 else:
                     # Try to create the directory
@@ -1327,7 +1404,7 @@ def main():
                         os.mkdir(path, mode=0o775)
                         d = path
                         print(f"VERBOSE: config['AFKBot']['{i[0]}'] created: "
-                              f"{d}", end='')
+                              f"{d}")
                         break
                     except Exception:
                         pass
@@ -1367,10 +1444,10 @@ def main():
         try:
             open(config["AFKBot"]["Certificate"], "r")
             cert_file = config["AFKBot"]["Certificate"]
-            print("VERBOSE: Using existing certificate: '{cert_file}'", end='')
+            print(f"VERBOSE: Using existing certificate: '{cert_file}'")
         except Exception as e:
             print("ERROR: Unable to read certificate file "
-                  f"'{config['AFKBot']['Certificate']}'", end=None)
+                  f"'{config['AFKBot']['Certificate']}'")
             if "Certifcate" in config["CmdLineOverride"] \
                and config["CmdLineOverride"]["Certificate"] is True:
                 print("specified on command line.")
@@ -1385,7 +1462,7 @@ def main():
     elif "Certificate" in config["CmdLineOverride"] \
          and config["CmdLineOverride"]["Certificate"] is True:
         if o.generate_certificate is True:
-            print("VERBOSE: Generating certificate from command line", end='')
+            print("VERBOSE: Generating certificate from command line")
             GenerateCertificate(config["AFKBot"]["Certificate"])
             cert_file = config["CmdLineOverride"]["Certificate"]
         else:
@@ -1394,8 +1471,7 @@ def main():
             exit(1)
     elif config["AFKBot"]["Certificate"] != cert_default:
         if o.generate_certificate is True:
-            print("VERBOSE: Generating certificate specified in configuration",
-                  end='')
+            print("VERBOSE: Generating certificate specified in configuration")
             GenerateCertificate(config["AFKBot"]["Certificate"])
         else:
             print("ERROR: Cannot find certificate specified in configuration "
@@ -1408,16 +1484,15 @@ def main():
             if os.path.isfile(os.path.join(data_dir, "afkbot.pem")):
                 cert_file = os.path.join(data_dir, "afkbot.pem")
                 config["AFKBot"]["Certificate"] = cert_file
-                print(f"VERBOSE: Found certificate at '{cert_file}'", end='')
+                print(f"VERBOSE: Found certificate at '{cert_file}'")
     # Try the current directory
     if cert_file is None and os.path.isfile("afkbot.pem"):
         cert_file = "afkbot.pem"
         config["AFKBot"]["Certificate"] = cert_file
-        print("VERBOSE: Found certificate at ./afkbot.pem", end='')
+        print("VERBOSE: Found certificate at ./afkbot.pem")
     # Can't find certificate, generate it
     if cert_file is None:
-        print("VERBOSE: Certificate not found, generating at "
-              f"'{cert_default}'", end='')
+        print("VERBOSE: Certificate not found, generating at '{cert_default}'")
         try:
             GenerateCertificate(cert_default)
         except Exception as e:
@@ -1428,6 +1503,8 @@ def main():
             config["Server"]["AccessTokens"] = []
         for token in o.access_tokens.split(","):
             config["Server"]["AccessTokens"].append = token
+
+    print(f"VERBOSE: Final config:\n{config}")
 
     while True:
         eavesdropper = mumbleConnection(config, delay=None, limit=None)
